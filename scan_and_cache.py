@@ -60,7 +60,7 @@ def parse_date(date_str: str) -> tuple[int, int]:
     )
 
 
-def resolve_channel_inputs(channel_input: str) -> list[str]:
+def resolve_channel_inputs(channel_input: str) -> tuple[list[str], bool]:
     """Determines whether the input is a path to a text file or a single channel string."""
     potential_file = Path(channel_input)
     
@@ -71,9 +71,9 @@ def resolve_channel_inputs(channel_input: str) -> list[str]:
         
         if not channels:
             raise ValueError(f"File '{potential_file}' contains no valid channel entries.")
-        return channels
+        return channels, True
 
-    return [channel_input.strip()]
+    return [channel_input.strip()], False
 
 
 def resolve_channel_id(channel_input: str) -> str:
@@ -155,7 +155,7 @@ def cache_channel_uploads(youtube, channel_id: str, force_refresh: bool = False)
 
 
 def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day: int, day_tolerance: int = 0, target_year: int = None) -> list:
-    """Filters local cache for videos uploaded on target month/day across prior years (or a single specified year)."""
+    """Filters local cache for videos uploaded on target month/day across prior years."""
     matches = []
 
     for video in cache_data["videos"]:
@@ -366,7 +366,7 @@ def fetch_ytdlp_fallback(channel_id: str, channel_name: str, target_month: int, 
 
 
 def export_throwbacks_to_json(channel_title: str, target_month: int, target_day: int, day_tolerance: int, matches: list) -> Path:
-    """Saves the filtered anniversary list to .exports/throwback_MM-DD.json."""
+    """Saves the filtered anniversary list to .exports/throwback_TITLE_MM-DD.json."""
     clean_title = "".join(c for c in channel_title if c.isalnum() or c in (" ", "_", "-")).strip()
     filename = f"throwback_{clean_title}_{target_month:02d}-{target_day:02d}.json"
     filepath = EXPORTS_DIR / filename
@@ -384,6 +384,26 @@ def export_throwbacks_to_json(channel_title: str, target_month: int, target_day:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
 
     print(f"Exported {len(matches)} throwback videos to {filepath.relative_to(BASE_DIR)}")
+    return filepath
+
+
+def export_aggregate_throwbacks_to_json(target_month: int, target_day: int, day_tolerance: int, matches: list) -> Path:
+    """Saves combined anniversary lists across all batch channels to .exports/throwback_MM-DD.aggregate.json."""
+    filename = f"throwback_{target_month:02d}-{target_day:02d}.aggregate.json"
+    filepath = EXPORTS_DIR / filename
+
+    output_data = {
+        "target_date": f"{target_month:02d}-{target_day:02d}",
+        "day_tolerance": day_tolerance,
+        "exported_at": datetime.now().isoformat(),
+        "total_matches": len(matches),
+        "videos": matches
+    }
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+    print(f"\nExported batch aggregate ({len(matches)} total videos across channels) to {filepath.relative_to(BASE_DIR)}")
     return filepath
 
 
@@ -456,11 +476,12 @@ def main():
         today = datetime.now()
         month, day = today.month, today.day
 
-    channels_to_process = resolve_channel_inputs(args.channel)
+    channels_to_process, is_batch = resolve_channel_inputs(args.channel)
     total_channels = len(channels_to_process)
     print(f"Found {total_channels} channel(s) to process.\n")
 
     youtube = get_youtube_client(scopes=SCOPES_READONLY)
+    aggregate_matches = []
 
     for index, channel_raw in enumerate(channels_to_process, start=1):
         print(f"=== Channel [{index}/{total_channels}]: '{channel_raw}' ===")
@@ -509,6 +530,12 @@ def main():
             if throwbacks:
                 export_title = channel_cache.get("channel_title", channel_raw)
                 export_throwbacks_to_json(export_title, month, day, args.days, throwbacks)
+                
+                for v in throwbacks:
+                    entry = dict(v)
+                    entry["channel_title"] = export_title
+                    aggregate_matches.append(entry)
+
                 print(f"\nMatching videos found ({len(throwbacks)}):")
                 for v in throwbacks[:10]:
                     print(f"  - [{v['year']}] {v['title']} ({v['url']})")
@@ -521,6 +548,10 @@ def main():
             print(f"Error processing channel '{channel_raw}': {e}")
 
         print("\n" + "-" * 50 + "\n")
+
+    if (is_batch or total_channels > 1) and aggregate_matches:
+        aggregate_matches.sort(key=lambda x: x["year"], reverse=True)
+        export_aggregate_throwbacks_to_json(month, day, args.days, aggregate_matches)
 
 
 if __name__ == "__main__":
