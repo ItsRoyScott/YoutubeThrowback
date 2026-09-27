@@ -7,7 +7,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 SCOPES_READONLY = ["https://www.googleapis.com/auth/youtube.readonly"]
-SCOPES_FULL = ["https://www.googleapis.com/auth/youtube"]
+SCOPES_READWRITE = ["https://www.googleapis.com/auth/youtube"]
+SCOPES_FULL = SCOPES_READWRITE
 
 def find_client_secrets_file() -> Path:
     credentials_dir = Path(__file__).resolve().parent / "_credentials"

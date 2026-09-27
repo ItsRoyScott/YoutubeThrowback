@@ -1,16 +1,16 @@
 # YouTube Throwback CLI
 
-A local command-line tool that automatically scans YouTube channel upload histories, caches video metadata locally, and extracts "On This Day" anniversary videos published on target dates across past years.
+A local command-line tool that automatically scans YouTube channel upload histories, caches video metadata locally, extracts "On This Day" anniversary videos published on target dates across past years, and generates YouTube playlists directly on your account.
 
 ---
 
 ## Features
 
-* **Smart Auto-Caching:** Automatically indexes full channel histories to `.cache/` on first run using low-cost API endpoints (1 quota unit per 50 videos). Subsequent queries on cached channels run instantly with zero API quota cost.
+* **Smart Auto-Caching:** Automatically indexes full channel histories to `.cache/` on first run using low-cost API endpoints (1 quota unit per 50 videos). Features automatic cache expiration (refreshes if older than 180 days) and manual force flags (`-f`).
 * **Zero-Quota Channel Lookups:** Pass channel names, handles (`@channel`), URLs, or raw Channel IDs. Resolves channel IDs locally without consuming API points.
-* **Batch Processing:** Pass a single channel or a `.txt` file containing multiple channels to process an entire list sequentially.
-* **Exact Matching and Custom Tolerances:** Defaults to exact date matching (0-day tolerance). Custom day ranges like `-d 3` (+/- 3 days) can be configured easily.
-* **Clean JSON Exports:** Outputs filtered anniversary results directly to `.exports/`.
+* **Batch Processing & Aggregation:** Process single channels or `.txt` lists sequentially. Automatically generates single-channel exports and combined `.aggregate.json` files.
+* **Exact Matching and Custom Tolerances:** Defaults to exact date matching (0-day tolerance) with optional custom ranges like `-d 3` (+/- 3 days).
+* **Automated Playlist Generation:** Generates YouTube playlists directly on your account using `generate_playlist.py`. Includes options for 1-video-per-channel filtering (`-1`), overwrite checks (`-o`), exponential backoff retry logic, and dry runs (`-n`).
 * **Zero-Quota Fallback:** Includes a `yt-dlp` fallback engine to handle API quota exhaustion smoothly.
 
 ---
@@ -26,6 +26,7 @@ YoutubeThrowback/
 ├── .cache/                   # Cached raw channel upload histories
 ├── .exports/                 # Generated anniversary video JSON files
 ├── fetch_throwbacks.py       # Authentication and YouTube API helpers
+├── generate_playlist.py      # Automated YouTube playlist creation script
 ├── get_channel_id.py         # Zero-quota channel ID resolver
 ├── scan_and_cache.py         # Main CLI application
 └── test_auth.py              # OAuth verification script
@@ -58,7 +59,7 @@ python test_auth.py
 
 ## Usage Examples
 
-### View Help
+### View CLI Help
 
 ```bash
 python scan_and_cache.py ?
@@ -67,7 +68,7 @@ python scan_and_cache.py ?
 
 ### Scan a Channel (Default Smart Auto-Cache)
 
-On first run, the script automatically indexes the channel history to `.cache/`. Every future run on this channel uses local cache files for zero API cost.
+Indexes full channel history on first run. Subsequent runs load from local cache with 0 API cost.
 
 ```bash
 python scan_and_cache.py "The Majority Report"
@@ -124,7 +125,46 @@ python scan_and_cache.py "The Majority Report" -l
 
 ---
 
+## Generating Playlists
+
+Use `generate_playlist.py` to create YouTube playlists from generated export files.
+
+### 1. Generate Playlist from Newest Aggregate File
+
+```bash
+python generate_playlist.py
+
+```
+
+### 2. Limit to One Video Per Channel (`-1` / `--one-per-channel`)
+
+```bash
+python generate_playlist.py -1
+
+```
+
+### 3. Overwrite Existing Playlist (`-o` / `--overwrite`)
+
+Replaces an existing playlist with the same title instead of creating a duplicate:
+
+```bash
+python generate_playlist.py -1 -o
+
+```
+
+### 4. Dry Run Mode (`-n` / `--dry-run`)
+
+Preview playlist contents without making calls to YouTube:
+
+```bash
+python generate_playlist.py -1 --dry-run
+
+```
+
+---
+
 ## Output Files
 
 * **Cached Channel Data:** Stored in `.cache/channel_<CHANNEL_ID>.json`
-* **Exported Results:** Stored in `.exports/throwback_<CHANNEL_TITLE>_MM-DD.json`
+* **Single-Channel Exports:** Stored in `.exports/throwback_<CHANNEL_TITLE>_MM-DD.json`
+* **Aggregate Batch Exports:** Stored in `.exports/throwback_MM-DD.aggregate.json`

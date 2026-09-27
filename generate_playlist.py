@@ -1,100 +1,290 @@
-# generate_playlist.py
+import argparse
 import json
-from datetime import datetime
+import sys
+import time
 from pathlib import Path
-from fetch_throwbacks import (
-    get_youtube_client,
-    get_channel_info,
-    fetch_throwback_videos,
-    SCOPES_FULL
-)
+from fetch_throwbacks import get_youtube_client
 
-def export_to_json(channel_title: str, target_month: int, target_day: int, day_tolerance: int, videos: list) -> Path:
-    output_dir = Path(__file__).resolve().parent / "exports"
-    output_dir.mkdir(exist_ok=True)
+SCOPES_READWRITE = ["https://www.googleapis.com/auth/youtube"]
 
-    filename = f"throwback_{target_month:02d}-{target_day:02d}.json"
-    filepath = output_dir / filename
+BASE_DIR = Path(__file__).resolve().parent
+EXPORTS_DIR = BASE_DIR / ".exports"
 
-    data = {
-        "channel_title": channel_title,
-        "target_date": f"{target_month:02d}-{target_day:02d}",
-        "day_tolerance": day_tolerance,
-        "exported_at": datetime.now().isoformat(),
-        "total_matches": len(videos),
-        "videos": videos
-    }
 
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+def find_latest_aggregate_file() -> Path:
+  """Finds the most recently modified aggregate JSON file in .exports/."""
+  if not EXPORTS_DIR.exists():
+    raise FileNotFoundError("The .exports directory does not exist.")
 
-    print(f"\nSaved JSON export to: {filepath}")
-    return filepath
+  aggregate_files = sorted(
+      EXPORTS_DIR.glob("*.aggregate.json"),
+      key=lambda p: p.stat().st_mtime,
+      reverse=True,
+  )
 
-def create_youtube_playlist(youtube, title: str, description: str, video_ids: list):
-    print("\nCreating new private YouTube playlist...")
-    
-    playlist = youtube.playlists().insert(
-        part="snippet,status",
-        body={
-            "snippet": {
-                "title": title,
-                "description": description
-            },
-            "status": {
-                "privacyStatus": "private"
-            }
-        }
-    ).execute()
+  if not aggregate_files:
+    all_exports = sorted(
+        EXPORTS_DIR.glob("throwback_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not all_exports:
+      raise FileNotFoundError(
+          "No throwback export files found in .exports/ directory."
+      )
+    return all_exports[0]
 
-    playlist_id = playlist["id"]
-    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
-    print(f"Playlist created: {playlist_url}")
-    print(f"Adding {len(video_ids)} videos to playlist...")
+  return aggregate_files[0]
 
-    for index, vid_id in enumerate(video_ids, start=1):
-        youtube.playlistItems().insert(
+
+def load_export_file(file_path: Path) -> dict:
+  """Loads and validates JSON data from an export file."""
+  with open(file_path, "r", encoding="utf-8") as f:
+    return json.load(f)
+
+
+def filter_one_per_channel(videos: list[dict]) -> list[dict]:
+  """Filters video list to keep at most one video per channel."""
+  seen_channels = set()
+  filtered = []
+
+  for video in videos:
+    channel = video.get("channel_title", "Unknown")
+    if channel not in seen_channels:
+      seen_channels.add(channel)
+      filtered.append(video)
+
+  return filtered
+
+
+def find_existing_playlist_id(youtube, title: str) -> str | None:
+  """Searches user account for an existing playlist matching the exact title."""
+  next_page_token = None
+  while True:
+    request = youtube.playlists().list(
+        part="snippet", mine=True, maxResults=50, pageToken=next_page_token
+    )
+    response = request.execute()
+
+    for item in response.get("items", []):
+      if item["snippet"]["title"] == title:
+        return item["id"]
+
+    next_page_token = response.get("nextPageToken")
+    if not next_page_token:
+      break
+
+  return None
+
+
+def create_youtube_playlist(
+    youtube, title: str, description: str, privacy: str = "private"
+) -> str:
+  """Creates a new YouTube playlist and returns its playlist ID."""
+  request = youtube.playlists().insert(
+      part="snippet,status",
+      body={
+          "snippet": {"title": title, "description": description},
+          "status": {"privacyStatus": privacy},
+      },
+  )
+  response = request.execute()
+  return response["id"]
+
+
+def add_videos_to_playlist(
+    youtube, playlist_id: str, videos: list[dict], max_retries: int = 3
+):
+  """Adds a list of video objects to a YouTube playlist with retry logic for transient API errors."""
+  for idx, video in enumerate(videos, start=1):
+    video_id = video["video_id"]
+    title = video.get("title", "Untitled")
+    channel = video.get("channel_title", "")
+
+    success = False
+    for attempt in range(1, max_retries + 1):
+      try:
+        request = youtube.playlistItems().insert(
             part="snippet",
             body={
                 "snippet": {
                     "playlistId": playlist_id,
                     "resourceId": {
                         "kind": "youtube#video",
-                        "videoId": vid_id
-                    }
+                        "videoId": video_id,
+                    },
                 }
-            }
-        ).execute()
-        print(f"  [{index}/{len(video_ids)}] Added video {vid_id}")
+            },
+        )
+        request.execute()
+        print(f"  [{idx}/{len(videos)}] Added: {title} ({channel})")
+        success = True
+        break
+      except Exception as err:
+        err_str = str(err)
+        if (
+            "SERVICE_UNAVAILABLE" in err_str
+            or "503" in err_str
+            or "500" in err_str
+        ) and attempt < max_retries:
+          print(
+              f"  [{idx}/{len(videos)}] Transient error ({err_str[:40]}...)."
+              f" Retrying ({attempt}/{max_retries})..."
+          )
+          time.sleep(1.5 * attempt)
+        else:
+          print(f"  [{idx}/{len(videos)}] Failed to add {title}: {err}")
+          break
 
-    print(f"\nSuccessfully populated playlist: {playlist_url}")
-    return playlist_url
+
+def main():
+  if "?" in sys.argv:
+    sys.argv[sys.argv.index("?")] = "--help"
+
+  parser = argparse.ArgumentParser(
+      description=(
+          "Generate YouTube Playlist from export files.\n\nDefaults to the"
+          " most recently generated aggregate JSON file in .exports/."
+      ),
+      formatter_class=argparse.RawDescriptionHelpFormatter,
+  )
+
+  parser.add_argument(
+      "export_file",
+      nargs="?",
+      default=None,
+      help=(
+          "Path or filename of the export JSON in .exports/ (defaults to the"
+          " newest .aggregate.json)."
+      ),
+  )
+
+  parser.add_argument(
+      "-1",
+      "--one-per-channel",
+      action="store_true",
+      help="Limit playlist items to at most one video per channel.",
+  )
+
+  parser.add_argument(
+      "-o",
+      "--overwrite",
+      action="store_true",
+      help=(
+          "Overwrite an existing playlist if one with the same title already"
+          " exists."
+      ),
+  )
+
+  parser.add_argument(
+      "-t",
+      "--title",
+      type=str,
+      default=None,
+      help="Custom title for the YouTube playlist.",
+  )
+
+  parser.add_argument(
+      "-p",
+      "--privacy",
+      type=str,
+      choices=["private", "unlisted", "public"],
+      default="private",
+      help="Playlist privacy status (default: private).",
+  )
+
+  parser.add_argument(
+      "-n",
+      "--dry-run",
+      action="store_true",
+      help=(
+          "Preview the videos that would be added without creating the"
+          " playlist."
+      ),
+  )
+
+  args = parser.parse_args()
+
+  if args.export_file:
+    target_path = Path(args.export_file)
+    if not target_path.exists():
+      target_path = EXPORTS_DIR / args.export_file
+    if not target_path.exists():
+      raise FileNotFoundError(f"Export file not found: {args.export_file}")
+  else:
+    target_path = find_latest_aggregate_file()
+
+  print(f"Loading export file: {target_path.relative_to(BASE_DIR)}")
+  data = load_export_file(target_path)
+  videos = data.get("videos", [])
+
+  if not videos:
+    print("No videos found in the selected export file.")
+    return
+
+  if args.one_per_channel:
+    videos = filter_one_per_channel(videos)
+    print(f"Filtered to {len(videos)} video(s) (1 per channel).")
+
+  target_date = data.get("target_date", "Throwbacks")
+  playlist_title = (
+      args.title if args.title else f"YouTube Throwbacks ({target_date})"
+  )
+
+  if args.dry_run:
+    print(f"\n[Dry Run] Would create playlist '{playlist_title}' with:")
+    for v in videos:
+      print(
+          f"  - [{v.get('channel_title', 'Unknown')}] {v['title']} ({v['url']})"
+      )
+    return
+
+  print(
+      "\nAuthenticating with YouTube (Write permissions required for"
+      " playlists)..."
+  )
+  youtube = get_youtube_client(scopes=SCOPES_READWRITE)
+
+  existing_playlist_id = find_existing_playlist_id(youtube, playlist_title)
+
+  if existing_playlist_id:
+    if not args.overwrite:
+      print(
+          f"\n[Warning] Playlist '{playlist_title}' already exists"
+          f" (https://www.youtube.com/playlist?list={existing_playlist_id})."
+      )
+      print(
+          "Aborting playlist creation to conserve API quota. Pass"
+          " '--overwrite' (or '-o') to replace it:"
+      )
+      print(
+          f"  python generate_playlist.py"
+          f" {'-1 ' if args.one_per_channel else ''}--overwrite"
+      )
+      return
+    else:
+      print(
+          f"Found existing playlist '{playlist_title}' ({existing_playlist_id})."
+          " Overwriting (--overwrite set)..."
+      )
+      youtube.playlists().delete(id=existing_playlist_id).execute()
+
+  print(f"Creating {args.privacy} playlist: '{playlist_title}'...")
+  playlist_id = create_youtube_playlist(
+      youtube,
+      playlist_title,
+      "Auto-generated throwback playlist",
+      privacy=args.privacy,
+  )
+
+  print(f"Adding {len(videos)} video(s) to playlist...")
+  add_videos_to_playlist(youtube, playlist_id, videos)
+
+  print(
+      "\nSuccessfully created playlist:"
+      f" https://www.youtube.com/playlist?list={playlist_id}"
+  )
+
 
 if __name__ == "__main__":
-    # Initialize client using full playlist creation scope imported from fetch_throwbacks
-    youtube = get_youtube_client(scopes=SCOPES_FULL)
-
-    target_channel_id = "UCxHMVuopzdiAtwr5HkgrjKw"
-    today = datetime.now()
-    month, day = today.month, today.day
-    tolerance = 3
-
-    # Reusing functions imported from fetch_throwbacks.py
-    channel_name, uploads_id = get_channel_info(youtube, target_channel_id)
-    matches = fetch_throwback_videos(youtube, uploads_id, month, day, tolerance)
-
-    if not matches:
-        print("No throwback videos found for this date range.")
-    else:
-        export_to_json(channel_name, month, day, tolerance, matches)
-
-        user_choice = input("\nWould you like to create a YouTube playlist from these videos? (y/n): ").strip().lower()
-
-        if user_choice == "y":
-            playlist_title = f"{channel_name} - On This Day ({month:02d}/{day:02d})"
-            playlist_desc = f"Throwback videos from {channel_name} around {month:02d}/{day:02d} across prior years."
-            video_ids = [v["video_id"] for v in matches]
-
-            create_youtube_playlist(youtube, playlist_title, playlist_desc, video_ids)
-        else:
-            print("Skipped playlist creation.")
+  main()
