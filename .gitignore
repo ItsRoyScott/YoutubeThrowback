@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE and Editor settings
+.vscode/
+.idea/
+
+# Application local output directories
+.cache/
+.exports/
+
+# Credentials directory (ignore contents except setup instructions)
+_credentials/*
+!_credentials/INSTRUCTIONS.md
+!_credentials/instructions.md
+
+# System files and logs
+.DS_Store
+*.log
