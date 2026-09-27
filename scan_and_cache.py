@@ -3,19 +3,22 @@ import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
 from fetch_throwbacks import (
-    get_youtube_client,
+    SCOPES_READONLY,
     get_channel_info,
-    SCOPES_READONLY
+    get_youtube_client,
 )
 from get_channel_id import get_channel_id
 
+# Check for yt-dlp availability for zero-quota fallback
 try:
     import yt_dlp
     HAS_YTDLP = True
 except ImportError:
     HAS_YTDLP = False
 
+# Global directories setup
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / ".cache"
 EXPORTS_DIR = BASE_DIR / ".exports"
@@ -23,11 +26,13 @@ EXPORTS_DIR = BASE_DIR / ".exports"
 CACHE_DIR.mkdir(exist_ok=True)
 EXPORTS_DIR.mkdir(exist_ok=True)
 
+# Default cache freshness limit in days (~6 months)
+MAX_CACHE_AGE_DAYS = 180
+
 MONTH_NAMES = [
     "", "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"
 ]
-
 
 class QuietLogger:
     """Custom logger to suppress yt-dlp stderr output during bot challenges."""
@@ -90,17 +95,42 @@ def resolve_channel_id(channel_input: str) -> str:
 
 
 def get_channel_cache_path(channel_id: str) -> Path:
+    """Returns the local cache JSON path for a channel ID."""
     return CACHE_DIR / f"channel_{channel_id}.json"
 
-
-def cache_channel_uploads(youtube, channel_id: str, force_refresh: bool = False) -> dict:
-    """Fetches full upload history via low-cost YouTube API playlist items."""
+def cache_channel_uploads(
+    youtube,
+    channel_id: str,
+    force_refresh: bool = False,
+    max_age_days: int = MAX_CACHE_AGE_DAYS,
+) -> dict:
+    """Fetches upload history via YouTube API or loads local cache if under max_age_days old."""
     cache_path = get_channel_cache_path(channel_id)
 
     if cache_path.exists() and not force_refresh:
-        print(f"Loading channel history from local cache: {cache_path.relative_to(BASE_DIR)}")
-        with open(cache_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cache_data = json.load(f)
+
+            cached_at_str = cache_data.get("cached_at")
+            if cached_at_str:
+                cached_dt = datetime.fromisoformat(cached_at_str)
+                age_days = (datetime.now() - cached_dt).days
+
+                if age_days <= max_age_days:
+                    print(
+                        f"Loading channel history from local cache: {cache_path.relative_to(BASE_DIR)} "
+                        f"({age_days} days old)"
+                    )
+                    return cache_data
+
+                print(
+                    f"Cache for channel {channel_id} is {age_days} days old "
+                    f"(exceeds {max_age_days}-day limit). Automatically refreshing..."
+                )
+            force_refresh = True
+        except Exception:
+            force_refresh = True
 
     print(f"Caching full upload history for channel {channel_id} via YouTube API...")
     channel_title, uploads_id = get_channel_info(youtube, channel_id)
@@ -153,8 +183,13 @@ def cache_channel_uploads(youtube, channel_id: str, force_refresh: bool = False)
     print(f"Successfully cached {len(videos)} videos to {cache_path.relative_to(BASE_DIR)}")
     return cache_data
 
-
-def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day: int, day_tolerance: int = 0, target_year: int = None) -> list:
+def query_throwbacks_from_cache(
+    cache_data: dict, 
+    target_month: int, 
+    target_day: int, 
+    day_tolerance: int = 0, 
+    target_year: int = None
+) -> list:
     """Filters local cache for videos uploaded on target month/day across prior years."""
     matches = []
 
@@ -185,8 +220,14 @@ def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day:
 
     return matches
 
-
-def fetch_single_year_api_search(youtube, channel_id: str, year: int, target_month: int, target_day: int, day_tolerance: int) -> tuple[list, bool]:
+def fetch_single_year_api_search(
+    youtube, 
+    channel_id: str, 
+    year: int, 
+    target_month: int, 
+    target_day: int, 
+    day_tolerance: int
+) -> tuple[list, bool]:
     """Queries YouTube API search endpoint for a specific year window."""
     try:
         target_dt = datetime(year, target_month, target_day)
@@ -229,7 +270,15 @@ def fetch_single_year_api_search(youtube, channel_id: str, year: int, target_mon
         return [], False
 
 
-def fetch_throwbacks_via_targeted_search(youtube, channel_id: str, target_month: int, target_day: int, day_tolerance: int = 0, start_year: int = 2006, target_year: int = None) -> tuple[list, bool]:
+def fetch_throwbacks_via_targeted_search(
+    youtube, 
+    channel_id: str, 
+    target_month: int, 
+    target_day: int, 
+    day_tolerance: int = 0, 
+    start_year: int = 2006, 
+    target_year: int = None
+) -> tuple[list, bool]:
     """Scans prior years using targeted API search queries."""
     if target_year is not None:
         years = [target_year]
@@ -257,8 +306,15 @@ def fetch_throwbacks_via_targeted_search(youtube, channel_id: str, target_month:
     all_matches.sort(key=lambda x: x["year"], reverse=True)
     return all_matches, quota_hit
 
-
-def fetch_ytdlp_fallback(channel_id: str, channel_name: str, target_month: int, target_day: int, day_tolerance: int = 0, browser: str = None, target_year: int = None) -> list:
+def fetch_ytdlp_fallback(
+    channel_id: str, 
+    channel_name: str, 
+    target_month: int, 
+    target_day: int, 
+    day_tolerance: int = 0, 
+    browser: str = None, 
+    target_year: int = None
+) -> list:
     """Zero-quota fallback using yt-dlp with mobile client emulation."""
     if not HAS_YTDLP:
         return []
@@ -364,8 +420,13 @@ def fetch_ytdlp_fallback(channel_id: str, channel_name: str, target_month: int, 
     matched_videos.sort(key=lambda x: x["year"], reverse=True)
     return matched_videos
 
-
-def export_throwbacks_to_json(channel_title: str, target_month: int, target_day: int, day_tolerance: int, matches: list) -> Path:
+def export_throwbacks_to_json(
+    channel_title: str, 
+    target_month: int, 
+    target_day: int, 
+    day_tolerance: int, 
+    matches: list
+) -> Path:
     """Saves the filtered anniversary list to .exports/throwback_TITLE_MM-DD.json."""
     clean_title = "".join(c for c in channel_title if c.isalnum() or c in (" ", "_", "-")).strip()
     filename = f"throwback_{clean_title}_{target_month:02d}-{target_day:02d}.json"
@@ -387,7 +448,12 @@ def export_throwbacks_to_json(channel_title: str, target_month: int, target_day:
     return filepath
 
 
-def export_aggregate_throwbacks_to_json(target_month: int, target_day: int, day_tolerance: int, matches: list) -> Path:
+def export_aggregate_throwbacks_to_json(
+    target_month: int, 
+    target_day: int, 
+    day_tolerance: int, 
+    matches: list
+) -> Path:
     """Saves combined anniversary lists across all batch channels to .exports/throwback_MM-DD.aggregate.json."""
     filename = f"throwback_{target_month:02d}-{target_day:02d}.aggregate.json"
     filepath = EXPORTS_DIR / filename
@@ -405,7 +471,6 @@ def export_aggregate_throwbacks_to_json(target_month: int, target_day: int, day_
 
     print(f"\nExported batch aggregate ({len(matches)} total videos across channels) to {filepath.relative_to(BASE_DIR)}")
     return filepath
-
 
 def main():
     if "?" in sys.argv:
@@ -468,6 +533,13 @@ def main():
         help="Specify browser name (for example chrome, firefox, edge, brave) to pass authentication cookies to yt-dlp."
     )
 
+    parser.add_argument(
+        "--max-age",
+        type=int,
+        default=180,
+        help="Maximum cache age in days before triggering an automatic refresh. Default is 180 (6 months)."
+    )
+
     args = parser.parse_args()
 
     if args.date:
@@ -485,7 +557,7 @@ def main():
 
     for index, channel_raw in enumerate(channels_to_process, start=1):
         print(f"=== Channel [{index}/{total_channels}]: '{channel_raw}' ===")
-        
+
         try:
             channel_id = resolve_channel_id(channel_raw)
             cache_path = get_channel_cache_path(channel_id)
@@ -523,14 +595,15 @@ def main():
                 channel_cache = cache_channel_uploads(
                     youtube=youtube,
                     channel_id=channel_id,
-                    force_refresh=args.force
+                    force_refresh=args.force,
+                    max_age_days=args.max_age
                 )
                 throwbacks = query_throwbacks_from_cache(channel_cache, month, day, args.days, target_year=args.year)
 
             if throwbacks:
                 export_title = channel_cache.get("channel_title", channel_raw)
                 export_throwbacks_to_json(export_title, month, day, args.days, throwbacks)
-                
+
                 for v in throwbacks:
                     entry = dict(v)
                     entry["channel_title"] = export_title
