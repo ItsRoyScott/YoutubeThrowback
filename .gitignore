@@ -25,3 +25,6 @@ _credentials/*
 # System files and logs
 .DS_Store
 *.log
+
+# User input files
+channels.txt
