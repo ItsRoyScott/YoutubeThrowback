@@ -1,5 +1,4 @@
 import argparse
-import concurrent.futures
 import json
 import sys
 from datetime import datetime, timedelta
@@ -24,6 +23,26 @@ EXPORTS_DIR = BASE_DIR / ".exports"
 CACHE_DIR.mkdir(exist_ok=True)
 EXPORTS_DIR.mkdir(exist_ok=True)
 
+MONTH_NAMES = [
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+]
+
+
+class QuietLogger:
+    """Custom logger to suppress yt-dlp stderr output during bot challenges."""
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
 
 def parse_date(date_str: str) -> tuple[int, int]:
     """Parses date string formats like MM-DD, MM/DD, or YYYY-MM-DD into (month, day)."""
@@ -37,7 +56,7 @@ def parse_date(date_str: str) -> tuple[int, int]:
             pass
 
     raise argparse.ArgumentTypeError(
-        f"Invalid date format: '{date_str}'. Use MM-DD, MM/DD, or YYYY-MM-DD (e.g. 09-27 or 09/27)."
+        f"Invalid date format: '{date_str}'. Use MM-DD, MM/DD, or YYYY-MM-DD (for example 09-27 or 09/27)."
     )
 
 
@@ -74,97 +93,16 @@ def get_channel_cache_path(channel_id: str) -> Path:
     return CACHE_DIR / f"channel_{channel_id}.json"
 
 
-def fetch_year_window(channel_id: str, year: int, target_month: int, target_day: int, day_tolerance: int) -> list:
-    """Worker function to fetch videos for a single year using yt-dlp date filtering."""
-    try:
-        target_dt = datetime(year, target_month, target_day)
-    except ValueError:
-        target_dt = datetime(year, target_month, target_day - 1)
-
-    start_dt = target_dt - timedelta(days=day_tolerance)
-    end_dt = target_dt + timedelta(days=day_tolerance)
-
-    date_after = start_dt.strftime("%Y%m%d")
-    date_before = end_dt.strftime("%Y%m%d")
-
-    url = f"https://www.youtube.com/channel/{channel_id}/videos"
-    
-    ydl_opts = {
-        "extract_flat": True,
-        "skip_download": True,
-        "quiet": True,
-        "no_warnings": True,
-        "daterange": yt_dlp.utils.DateRange(start=date_after, end=date_before)
-    }
-
-    matches = []
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-            if info and "entries" in info:
-                for entry in info["entries"]:
-                    if not entry:
-                        continue
-                    video_id = entry.get("id")
-                    if not video_id:
-                        continue
-                    
-                    upload_date = entry.get("upload_date")
-                    if upload_date and len(upload_date) == 8:
-                        published_at = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}T00:00:00Z"
-                    else:
-                        published_at = f"{year}-{target_month:02d}-{target_day:02d}T00:00:00Z"
-
-                    matches.append({
-                        "title": entry.get("title", "Untitled"),
-                        "video_id": video_id,
-                        "url": f"https://www.youtube.com/watch?v={video_id}",
-                        "published_at": published_at,
-                        "year": year
-                    })
-        except Exception:
-            pass
-
-    return matches
-
-
-def fetch_throwbacks_parallel_ytdlp(channel_id: str, target_month: int, target_day: int, day_tolerance: int = 0, start_year: int = 2006) -> list:
-    """Scans prior years concurrently using a ThreadPoolExecutor with live progress updates."""
-    current_year = datetime.now().year
-    years = list(range(start_year, current_year + 1))
-    all_matches = []
-    total_years = len(years)
-    completed_count = 0
-
-    print(f"Scanning {total_years} prior years in parallel with yt-dlp threads...")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {
-            executor.submit(fetch_year_window, channel_id, yr, target_month, target_day, day_tolerance): yr
-            for yr in years
-        }
-
-        for future in concurrent.futures.as_completed(futures):
-            yr = futures[future]
-            results = future.result()
-            completed_count += 1
-            all_matches.extend(results)
-            print(f"  [Progress] Scanned year {yr} ({len(results)} video(s) found) [{completed_count}/{total_years} years complete]")
-
-    all_matches.sort(key=lambda x: x["year"], reverse=True)
-    return all_matches
-
-
 def cache_channel_uploads(youtube, channel_id: str, force_refresh: bool = False) -> dict:
-    """Fetches full upload history via YouTube API with live progress output."""
+    """Fetches full upload history via low-cost YouTube API playlist items."""
     cache_path = get_channel_cache_path(channel_id)
 
     if cache_path.exists() and not force_refresh:
-        print(f"Loading channel history from cache: {cache_path.relative_to(BASE_DIR)}")
+        print(f"Loading channel history from local cache: {cache_path.relative_to(BASE_DIR)}")
         with open(cache_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    print(f"Scanning upload history for channel {channel_id} via YouTube API...")
+    print(f"Caching full upload history for channel {channel_id} via YouTube API...")
     channel_title, uploads_id = get_channel_info(youtube, channel_id)
 
     videos = []
@@ -173,13 +111,17 @@ def cache_channel_uploads(youtube, channel_id: str, force_refresh: bool = False)
 
     while True:
         page += 1
-        request = youtube.playlistItems().list(
-            part="snippet",
-            playlistId=uploads_id,
-            maxResults=50,
-            pageToken=next_page_token
-        )
-        response = request.execute()
+        try:
+            request = youtube.playlistItems().list(
+                part="snippet",
+                playlistId=uploads_id,
+                maxResults=50,
+                pageToken=next_page_token
+            )
+            response = request.execute()
+        except Exception as err:
+            print(f"  [Notice] API scan stopped: {err}")
+            break
 
         items = response.get("items", [])
         for item in items:
@@ -241,6 +183,174 @@ def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day:
     return matches
 
 
+def fetch_single_year_api_search(youtube, channel_id: str, year: int, target_month: int, target_day: int, day_tolerance: int) -> tuple[list, bool]:
+    """Queries YouTube API search endpoint for a specific year window."""
+    try:
+        target_dt = datetime(year, target_month, target_day)
+    except ValueError:
+        target_dt = datetime(year, target_month, target_day - 1)
+
+    start_dt = target_dt - timedelta(days=day_tolerance)
+    end_dt = target_dt + timedelta(days=day_tolerance, hours=23, minutes=59, seconds=59)
+
+    published_after = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    published_before = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    try:
+        request = youtube.search().list(
+            part="snippet",
+            channelId=channel_id,
+            type="video",
+            publishedAfter=published_after,
+            publishedBefore=published_before,
+            maxResults=50
+        )
+        response = request.execute()
+
+        matches = []
+        for item in response.get("items", []):
+            snippet = item["snippet"]
+            matches.append({
+                "title": snippet["title"],
+                "video_id": item["id"]["videoId"],
+                "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}",
+                "published_at": snippet["publishedAt"],
+                "year": year
+            })
+        return matches, False
+    except Exception as err:
+        err_str = str(err)
+        if "quotaExceeded" in err_str or "429" in err_str or "rateLimitExceeded" in err_str:
+            return [], True
+        print(f"  [Warning] Error fetching year {year}: {err}")
+        return [], False
+
+
+def fetch_throwbacks_via_targeted_search(youtube, channel_id: str, target_month: int, target_day: int, day_tolerance: int = 0, start_year: int = 2006) -> tuple[list, bool]:
+    """Scans prior years using targeted API search queries."""
+    current_year = datetime.now().year
+    years = list(range(start_year, current_year + 1))
+    all_matches = []
+    quota_hit = False
+    
+    print(f"Executing live year-by-year search across {len(years)} prior years...")
+
+    for yr in years:
+        results, quota_exceeded = fetch_single_year_api_search(youtube, channel_id, yr, target_month, target_day, day_tolerance)
+        
+        if quota_exceeded:
+            print("\n  [Notice] Google API daily Search Queries limit reached.")
+            quota_hit = True
+            break
+
+        all_matches.extend(results)
+        if results:
+            print(f"  [Found] Year {yr}: {len(results)} video(s)")
+
+    all_matches.sort(key=lambda x: x["year"], reverse=True)
+    return all_matches, quota_hit
+
+
+def fetch_ytdlp_fallback(channel_id: str, channel_name: str, target_month: int, target_day: int, day_tolerance: int = 0, browser: str = None) -> list:
+    """Zero-quota fallback using yt-dlp with mobile client emulation."""
+    if not HAS_YTDLP:
+        return []
+
+    month_name = MONTH_NAMES[target_month]
+    search_query = f'ytsearch60:"{channel_name}" "{month_name} {target_day}"'
+    print(f"Executing zero-quota search fallback via yt-dlp: {search_query}...")
+
+    ydl_opts_flat = {
+        "extract_flat": True,
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": True,
+        "socket_timeout": 10,
+        "logger": QuietLogger(),
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "mweb", "android"]
+            }
+        }
+    }
+    if browser:
+        ydl_opts_flat["cookiesfrombrowser"] = (browser,)
+
+    candidate_ids = []
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts_flat) as ydl:
+            info = ydl.extract_info(search_query, download=False)
+            entries = info.get("entries", []) if info else []
+            for entry in entries:
+                if entry and entry.get("id"):
+                    candidate_ids.append(entry.get("id"))
+    except Exception:
+        pass
+
+    if not candidate_ids:
+        return []
+
+    print(f"  [yt-dlp] Found {len(candidate_ids)} candidate videos. Verifying channel ownership and publication dates...")
+
+    ydl_opts_detail = {
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": True,
+        "socket_timeout": 10,
+        "logger": QuietLogger(),
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "mweb", "android"]
+            }
+        }
+    }
+
+    matched_videos = []
+    for vid in candidate_ids:
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_detail) as ydl:
+                v_info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+            if not v_info:
+                continue
+
+            v_channel_id = v_info.get("channel_id") or v_info.get("uploader_id")
+            if v_channel_id and v_channel_id != channel_id:
+                continue
+
+            upload_date = v_info.get("upload_date")
+            if not upload_date or len(upload_date) != 8:
+                continue
+
+            yr = int(upload_date[:4])
+            m = int(upload_date[4:6])
+            d = int(upload_date[6:8])
+
+            try:
+                target_dt = datetime(yr, target_month, target_day)
+            except ValueError:
+                target_dt = datetime(yr, target_month, target_day - 1)
+
+            video_dt = datetime(yr, m, d)
+            diff_days = abs((video_dt - target_dt).days)
+
+            if diff_days <= day_tolerance:
+                published_at = f"{yr}-{m:02d}-{d:02d}T00:00:00Z"
+                matched_videos.append({
+                    "title": v_info.get("title", "Untitled"),
+                    "video_id": vid,
+                    "url": f"https://www.youtube.com/watch?v={vid}",
+                    "published_at": published_at,
+                    "year": yr
+                })
+        except Exception:
+            continue
+
+    matched_videos.sort(key=lambda x: x["year"], reverse=True)
+    return matched_videos
+
+
 def export_throwbacks_to_json(channel_title: str, target_month: int, target_day: int, day_tolerance: int, matches: list) -> Path:
     """Saves the filtered anniversary list to .exports/throwback_MM-DD.json."""
     clean_title = "".join(c for c in channel_title if c.isalnum() or c in (" ", "_", "-")).strip()
@@ -269,12 +379,10 @@ def main():
 
     parser = argparse.ArgumentParser(
         description=(
-            "YouTube Throwback CLI: Scan channel uploads, cache data locally, and export anniversary videos.\n\n"
+            "YouTube Throwback CLI: Automatically caches channel histories and extracts 'On This Day' anniversary videos.\n\n"
             "Channel Input Options:\n"
             "  1. Pass a single channel name, handle (@channel), URL, or raw Channel ID.\n"
-            "  2. Pass a path to a .txt file containing one channel entry per line (e.g. channels.txt).\n\n"
-            "Performance:\n"
-            "  Use -y / --ytdlp for parallel date-window lookups on massive high-volume channels."
+            "  2. Pass a path to a .txt file containing one channel entry per line (for example channels.txt)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=True
@@ -301,15 +409,22 @@ def main():
     )
 
     parser.add_argument(
-        "-f", "--refresh",
+        "-f", "--force",
         action="store_true",
-        help="Force re-scanning the channel, ignoring existing .cache files."
+        help="Force re-syncing full channel history to .cache/, ignoring existing local files."
     )
 
     parser.add_argument(
-        "-y", "--ytdlp",
+        "-l", "--live",
         action="store_true",
-        help="Use multi-threaded yt-dlp to bypass YouTube's 20,000 video API pagination cap."
+        help="Bypass full local caching and run a live year-by-year search via API."
+    )
+
+    parser.add_argument(
+        "-cb", "--cookies-from-browser",
+        type=str,
+        default=None,
+        help="Specify browser name (for example chrome, firefox, edge, brave) to pass authentication cookies to yt-dlp."
     )
 
     args = parser.parse_args()
@@ -324,56 +439,52 @@ def main():
     total_channels = len(channels_to_process)
     print(f"Found {total_channels} channel(s) to process.\n")
 
-    youtube = None
-    if not args.ytdlp:
-        youtube = get_youtube_client(scopes=SCOPES_READONLY)
+    youtube = get_youtube_client(scopes=SCOPES_READONLY)
 
     for index, channel_raw in enumerate(channels_to_process, start=1):
         print(f"=== Channel [{index}/{total_channels}]: '{channel_raw}' ===")
         
         try:
             channel_id = resolve_channel_id(channel_raw)
+            cache_path = get_channel_cache_path(channel_id)
 
-            if args.ytdlp:
-                if not HAS_YTDLP:
-                    raise RuntimeError("yt-dlp is not installed. Run 'pip install yt-dlp' to use this feature.")
-                
-                cache_path = get_channel_cache_path(channel_id)
-                
-                if cache_path.exists() and not args.refresh:
-                    print(f"Loading channel history from cache: {cache_path.relative_to(BASE_DIR)}")
-                    with open(cache_path, "r", encoding="utf-8") as f:
-                        channel_cache = json.load(f)
-                    throwbacks = query_throwbacks_from_cache(channel_cache, month, day, args.days)
-                else:
-                    throwbacks = fetch_throwbacks_parallel_ytdlp(
-                        channel_id=channel_id,
-                        target_month=month,
-                        target_day=day,
-                        day_tolerance=args.days
-                    )
-                    
-                    channel_cache_data = {
-                        "channel_id": channel_id,
-                        "channel_title": f"Channel_{channel_id}",
-                        "cached_at": datetime.now().isoformat(),
-                        "total_videos": len(throwbacks),
-                        "videos": throwbacks
-                    }
-                    with open(cache_path, "w", encoding="utf-8") as f:
-                        json.dump(channel_cache_data, f, indent=2, ensure_ascii=False)
-                    
-                    channel_cache = channel_cache_data
+            if args.live:
+                throwbacks, quota_hit = fetch_throwbacks_via_targeted_search(
+                    youtube=youtube,
+                    channel_id=channel_id,
+                    target_month=month,
+                    target_day=day,
+                    day_tolerance=args.days
+                )
+
+                if quota_hit:
+                    if cache_path.exists():
+                        print(f"  [Fallback] Quota reached. Loading local cache: {cache_path.relative_to(BASE_DIR)}")
+                        with open(cache_path, "r", encoding="utf-8") as f:
+                            channel_cache = json.load(f)
+                        throwbacks = query_throwbacks_from_cache(channel_cache, month, day, args.days)
+                    elif HAS_YTDLP:
+                        throwbacks = fetch_ytdlp_fallback(
+                            channel_id=channel_id,
+                            channel_name=channel_raw,
+                            target_month=month,
+                            target_day=day,
+                            day_tolerance=args.days,
+                            browser=args.cookies_from_browser
+                        )
+
+                channel_cache = {"channel_title": channel_raw}
+
             else:
                 channel_cache = cache_channel_uploads(
                     youtube=youtube,
                     channel_id=channel_id,
-                    force_refresh=args.refresh
+                    force_refresh=args.force
                 )
                 throwbacks = query_throwbacks_from_cache(channel_cache, month, day, args.days)
 
             if throwbacks:
-                export_title = channel_cache.get("channel_title", channel_id)
+                export_title = channel_cache.get("channel_title", channel_raw)
                 export_throwbacks_to_json(export_title, month, day, args.days, throwbacks)
                 print(f"\nMatching videos found ({len(throwbacks)}):")
                 for v in throwbacks[:10]:
