@@ -154,8 +154,8 @@ def cache_channel_uploads(youtube, channel_id: str, force_refresh: bool = False)
     return cache_data
 
 
-def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day: int, day_tolerance: int = 0) -> list:
-    """Filters local cache for videos uploaded on target month/day across all prior years."""
+def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day: int, day_tolerance: int = 0, target_year: int = None) -> list:
+    """Filters local cache for videos uploaded on target month/day across prior years (or a single specified year)."""
     matches = []
 
     for video in cache_data["videos"]:
@@ -163,6 +163,9 @@ def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day:
             continue
 
         published_dt = datetime.strptime(video["published_at"], "%Y-%m-%dT%H:%M:%SZ")
+
+        if target_year is not None and published_dt.year != target_year:
+            continue
 
         try:
             target_date_same_year = datetime(published_dt.year, target_month, target_day)
@@ -226,14 +229,18 @@ def fetch_single_year_api_search(youtube, channel_id: str, year: int, target_mon
         return [], False
 
 
-def fetch_throwbacks_via_targeted_search(youtube, channel_id: str, target_month: int, target_day: int, day_tolerance: int = 0, start_year: int = 2006) -> tuple[list, bool]:
+def fetch_throwbacks_via_targeted_search(youtube, channel_id: str, target_month: int, target_day: int, day_tolerance: int = 0, start_year: int = 2006, target_year: int = None) -> tuple[list, bool]:
     """Scans prior years using targeted API search queries."""
-    current_year = datetime.now().year
-    years = list(range(start_year, current_year + 1))
+    if target_year is not None:
+        years = [target_year]
+        print(f"Executing live search for single target year {target_year}...")
+    else:
+        current_year = datetime.now().year
+        years = list(range(start_year, current_year + 1))
+        print(f"Executing live year-by-year search across {len(years)} prior years...")
+
     all_matches = []
     quota_hit = False
-    
-    print(f"Executing live year-by-year search across {len(years)} prior years...")
 
     for yr in years:
         results, quota_exceeded = fetch_single_year_api_search(youtube, channel_id, yr, target_month, target_day, day_tolerance)
@@ -251,13 +258,17 @@ def fetch_throwbacks_via_targeted_search(youtube, channel_id: str, target_month:
     return all_matches, quota_hit
 
 
-def fetch_ytdlp_fallback(channel_id: str, channel_name: str, target_month: int, target_day: int, day_tolerance: int = 0, browser: str = None) -> list:
+def fetch_ytdlp_fallback(channel_id: str, channel_name: str, target_month: int, target_day: int, day_tolerance: int = 0, browser: str = None, target_year: int = None) -> list:
     """Zero-quota fallback using yt-dlp with mobile client emulation."""
     if not HAS_YTDLP:
         return []
 
     month_name = MONTH_NAMES[target_month]
-    search_query = f'ytsearch60:"{channel_name}" "{month_name} {target_day}"'
+    if target_year is not None:
+        search_query = f'ytsearch60:"{channel_name}" "{month_name} {target_day} {target_year}"'
+    else:
+        search_query = f'ytsearch60:"{channel_name}" "{month_name} {target_day}"'
+
     print(f"Executing zero-quota search fallback via yt-dlp: {search_query}...")
 
     ydl_opts_flat = {
@@ -326,6 +337,9 @@ def fetch_ytdlp_fallback(channel_id: str, channel_name: str, target_month: int, 
             yr = int(upload_date[:4])
             m = int(upload_date[4:6])
             d = int(upload_date[6:8])
+
+            if target_year is not None and yr != target_year:
+                continue
 
             try:
                 target_dt = datetime(yr, target_month, target_day)
@@ -409,6 +423,13 @@ def main():
     )
 
     parser.add_argument(
+        "-y", "--year",
+        type=int,
+        default=None,
+        help="Target a single specific year (for example 2016) instead of scanning all past years."
+    )
+
+    parser.add_argument(
         "-f", "--force",
         action="store_true",
         help="Force re-syncing full channel history to .cache/, ignoring existing local files."
@@ -417,7 +438,7 @@ def main():
     parser.add_argument(
         "-l", "--live",
         action="store_true",
-        help="Bypass full local caching and run a live year-by-year search via API."
+        help="Bypass full local caching and run a live targeted search via API."
     )
 
     parser.add_argument(
@@ -454,7 +475,8 @@ def main():
                     channel_id=channel_id,
                     target_month=month,
                     target_day=day,
-                    day_tolerance=args.days
+                    day_tolerance=args.days,
+                    target_year=args.year
                 )
 
                 if quota_hit:
@@ -462,7 +484,7 @@ def main():
                         print(f"  [Fallback] Quota reached. Loading local cache: {cache_path.relative_to(BASE_DIR)}")
                         with open(cache_path, "r", encoding="utf-8") as f:
                             channel_cache = json.load(f)
-                        throwbacks = query_throwbacks_from_cache(channel_cache, month, day, args.days)
+                        throwbacks = query_throwbacks_from_cache(channel_cache, month, day, args.days, target_year=args.year)
                     elif HAS_YTDLP:
                         throwbacks = fetch_ytdlp_fallback(
                             channel_id=channel_id,
@@ -470,7 +492,8 @@ def main():
                             target_month=month,
                             target_day=day,
                             day_tolerance=args.days,
-                            browser=args.cookies_from_browser
+                            browser=args.cookies_from_browser,
+                            target_year=args.year
                         )
 
                 channel_cache = {"channel_title": channel_raw}
@@ -481,7 +504,7 @@ def main():
                     channel_id=channel_id,
                     force_refresh=args.force
                 )
-                throwbacks = query_throwbacks_from_cache(channel_cache, month, day, args.days)
+                throwbacks = query_throwbacks_from_cache(channel_cache, month, day, args.days, target_year=args.year)
 
             if throwbacks:
                 export_title = channel_cache.get("channel_title", channel_raw)
@@ -492,7 +515,7 @@ def main():
                 if len(throwbacks) > 10:
                     print(f"  ... and {len(throwbacks) - 10} more (see export file)")
             else:
-                print(f"\nNo matching videos found on {month:02d}-{day:02d} across past years.")
+                print(f"\nNo matching videos found on {month:02d}-{day:02d} for year {args.year if args.year else 'all past years'}.")
 
         except Exception as e:
             print(f"Error processing channel '{channel_raw}': {e}")
