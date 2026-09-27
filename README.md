@@ -30,7 +30,6 @@ YoutubeThrowback/
 ├── get_channel_id.py         # Zero-quota channel ID resolver
 ├── scan_and_cache.py         # Main CLI application
 └── test_auth.py              # OAuth verification script
-
 ```
 
 ---
@@ -43,7 +42,6 @@ Ensure Python 3.9 or higher is installed, then run:
 
 ```bash
 pip install google-auth-oauthlib google-api-python-client yt-dlp
-
 ```
 
 ### 2. Configure Google Credentials
@@ -52,7 +50,6 @@ Follow the instructions in `_credentials/INSTRUCTIONS.md` to place your Google O
 
 ```bash
 python test_auth.py
-
 ```
 
 ---
@@ -63,7 +60,6 @@ python test_auth.py
 
 ```bash
 python scan_and_cache.py ?
-
 ```
 
 ### Scan a Channel (Default Smart Auto-Cache)
@@ -73,8 +69,7 @@ Indexes full channel history on first run. Subsequent runs load from local cache
 ```bash
 python scan_and_cache.py "The Majority Report"
 python scan_and_cache.py @democracyatwork
-python scan_and_cache.py [https://www.youtube.com/@democracyatwork](https://www.youtube.com/@democracyatwork)
-
+python scan_and_cache.py https://www.youtube.com/@democracyatwork
 ```
 
 ### Batch Process Multiple Channels
@@ -86,14 +81,12 @@ Create a text file (such as `channels.txt`) with one channel per line:
 Democracy At Work
 @democracyatwork
 ABC News
-
 ```
 
 Run the script against the file:
 
 ```bash
 python scan_and_cache.py channels.txt
-
 ```
 
 ### Specify Target Date and Day Tolerance
@@ -102,7 +95,6 @@ Search for anniversary videos published around July 15th within a +/- 3 day wind
 
 ```bash
 python scan_and_cache.py "The Majority Report" -t 07-15 -d 3
-
 ```
 
 ### Force Refresh Local Cache (`-f`)
@@ -111,7 +103,6 @@ Re-sync local channel history from YouTube:
 
 ```bash
 python scan_and_cache.py "The Majority Report" -f
-
 ```
 
 ### Live Targeted Search (`-l`)
@@ -120,7 +111,6 @@ Bypass local caching and perform a live year-by-year search via the API:
 
 ```bash
 python scan_and_cache.py "The Majority Report" -l
-
 ```
 
 ---
@@ -133,14 +123,12 @@ Use `generate_playlist.py` to create YouTube playlists from generated export fil
 
 ```bash
 python generate_playlist.py
-
 ```
 
 ### 2. Limit to One Video Per Channel (`-1` / `--one-per-channel`)
 
 ```bash
 python generate_playlist.py -1
-
 ```
 
 ### 3. Overwrite Existing Playlist (`-o` / `--overwrite`)
@@ -149,7 +137,6 @@ Replaces an existing playlist with the same title instead of creating a duplicat
 
 ```bash
 python generate_playlist.py -1 -o
-
 ```
 
 ### 4. Dry Run Mode (`-n` / `--dry-run`)
@@ -158,7 +145,6 @@ Preview playlist contents without making calls to YouTube:
 
 ```bash
 python generate_playlist.py -1 --dry-run
-
 ```
 
 ---
