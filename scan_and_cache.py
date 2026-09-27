@@ -128,7 +128,7 @@ def fetch_year_window(channel_id: str, year: int, target_month: int, target_day:
     return matches
 
 
-def fetch_throwbacks_parallel_ytdlp(channel_id: str, target_month: int, target_day: int, day_tolerance: int = 3, start_year: int = 2006) -> list:
+def fetch_throwbacks_parallel_ytdlp(channel_id: str, target_month: int, target_day: int, day_tolerance: int = 0, start_year: int = 2006) -> list:
     """Scans prior years concurrently using a ThreadPoolExecutor with live progress updates."""
     current_year = datetime.now().year
     years = list(range(start_year, current_year + 1))
@@ -212,8 +212,8 @@ def cache_channel_uploads(youtube, channel_id: str, force_refresh: bool = False)
     return cache_data
 
 
-def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day: int, day_tolerance: int = 3) -> list:
-    """Filters local cache for videos uploaded around target month/day across all prior years."""
+def query_throwbacks_from_cache(cache_data: dict, target_month: int, target_day: int, day_tolerance: int = 0) -> list:
+    """Filters local cache for videos uploaded on target month/day across all prior years."""
     matches = []
 
     for video in cache_data["videos"]:
@@ -289,8 +289,8 @@ def main():
     parser.add_argument(
         "-d", "--days",
         type=int,
-        default=3,
-        help="Day range tolerance (+/- number of days around target date). Default is 3."
+        default=0,
+        help="Day range tolerance (+/- number of days around target date). Default is 0 (exact date match)."
     )
 
     parser.add_argument(
@@ -381,7 +381,7 @@ def main():
                 if len(throwbacks) > 10:
                     print(f"  ... and {len(throwbacks) - 10} more (see export file)")
             else:
-                print(f"\nNo matching videos found around {month:02d}-{day:02d} (+/- {args.days} days).")
+                print(f"\nNo matching videos found on {month:02d}-{day:02d} across past years.")
 
         except Exception as e:
             print(f"Error processing channel '{channel_raw}': {e}")
