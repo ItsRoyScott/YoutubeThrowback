@@ -79,7 +79,7 @@ Create a text file (such as `channels.txt`) with one channel per line:
 ```text
 # My Channel List
 Democracy At Work
-@democracyatwork
+@TheMajorityReport
 ABC News
 ```
 
