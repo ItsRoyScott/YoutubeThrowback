@@ -68,8 +68,8 @@ Indexes full channel history on first run. Subsequent runs load from local cache
 
 ```bash
 python scan_and_cache.py "The Majority Report"
-python scan_and_cache.py @democracyatwork
-python scan_and_cache.py https://www.youtube.com/@democracyatwork
+python scan_and_cache.py @democracyatwrk
+python scan_and_cache.py https://www.youtube.com/@democracyatwrk
 ```
 
 ### Batch Process Multiple Channels
