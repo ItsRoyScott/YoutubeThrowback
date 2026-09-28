@@ -25,15 +25,14 @@ def get_youtube_client(scopes=None):
     token_path = credentials_dir / "token.json"
     credentials = None
 
-    # 1. Try loading existing token from disk
     if token_path.exists():
         try:
             credentials = Credentials.from_authorized_user_file(str(token_path), scopes)
+            if not credentials.has_scopes(scopes):
+                credentials = None
         except Exception:
-            # If token is corrupt or missing refresh_token, reset credentials
             credentials = None
 
-    # 2. Refresh token if expired, or trigger browser login if missing
     if not credentials or not credentials.valid:
         if credentials and credentials.expired and credentials.refresh_token:
             try:
@@ -44,15 +43,12 @@ def get_youtube_client(scopes=None):
         if not credentials or not credentials.valid:
             secrets_path = find_client_secrets_file()
             flow = InstalledAppFlow.from_client_secrets_file(str(secrets_path), scopes=scopes)
-            
-            # Force prompt="consent" so Google always includes a refresh_token
             credentials = flow.run_local_server(
                 port=8000,
                 prompt="consent",
                 access_type="offline"
             )
 
-        # 3. Save full credentials (including refresh token) for future runs
         with open(token_path, "w", encoding="utf-8") as token_file:
             token_file.write(credentials.to_json())
 
