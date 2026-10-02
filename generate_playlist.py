@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 import time
 import webbrowser
@@ -66,6 +67,33 @@ def filter_one_per_channel(videos: list[dict]) -> list[dict]:
     return filtered
 
 
+def find_user_throwback_playlists(youtube) -> list[dict]:
+    """Retrieves all playlists from user's account that match the 'YouTube Throwbacks' title prefix."""
+    matching_playlists = []
+    next_page_token = None
+
+    while True:
+        request = youtube.playlists().list(
+            part="snippet", mine=True, maxResults=50, pageToken=next_page_token
+        )
+        response = request.execute()
+
+        for item in response.get("items", []):
+            title = item.get("snippet", {}).get("title", "")
+            if title.startswith("YouTube Throwbacks"):
+                matching_playlists.append({
+                    "id": item["id"],
+                    "title": title,
+                    "description": item.get("snippet", {}).get("description", ""),
+                })
+
+        next_page_token = response.get("nextPageToken")
+        if not next_page_token:
+            break
+
+    return matching_playlists
+
+
 def find_existing_playlist_id(youtube, title: str) -> str | None:
     """Searches user account for an existing playlist matching the exact title."""
     next_page_token = None
@@ -84,6 +112,64 @@ def find_existing_playlist_id(youtube, title: str) -> str | None:
             break
 
     return None
+
+
+def delete_throwback_playlists(youtube, month_pattern: str, dry_run: bool = False) -> int:
+    """
+    Deletes YouTube Throwback playlists matching a given month pattern or '*' for all.
+    Strictly safeguards against deleting non-throwback playlists on the user's account.
+    """
+    all_throwbacks = find_user_throwback_playlists(youtube)
+    if not all_throwbacks:
+        print("No 'YouTube Throwbacks' playlists found on your account.")
+        return 0
+
+    target_playlists = []
+    pattern = month_pattern.strip()
+
+    for pl in all_throwbacks:
+        title = pl["title"]
+        if pattern == "*":
+            target_playlists.append(pl)
+        else:
+            month_num = None
+            if pattern.isdigit():
+                month_num = f"{int(pattern):02d}"
+
+            date_match = re.search(r"\((\d{2})[-/](\d{2})\)", title)
+            if date_match:
+                pl_month = date_match.group(1)
+                if month_num and pl_month == month_num:
+                    target_playlists.append(pl)
+                elif pattern in title:
+                    target_playlists.append(pl)
+            elif pattern in title:
+                target_playlists.append(pl)
+
+    if not target_playlists:
+        print(f"No Throwback playlists found matching pattern/month: '{month_pattern}'.")
+        return 0
+
+    print(f"\nFound {len(target_playlists)} Throwback playlist(s) matching '{month_pattern}':")
+    for pl in target_playlists:
+        print(f"  - [{pl['id']}] {pl['title']}")
+
+    if dry_run:
+        print("\n[Dry Run] No playlists were deleted.")
+        return len(target_playlists)
+
+    print("\nDeleting matching throwback playlists...")
+    deleted_count = 0
+    for pl in target_playlists:
+        try:
+            youtube.playlists().delete(id=pl["id"]).execute()
+            print(f"  Deleted: {pl['title']} ({pl['id']})")
+            deleted_count += 1
+        except Exception as err:
+            print(f"  Failed to delete '{pl['title']}': {err}")
+
+    print(f"\nSuccessfully deleted {deleted_count} playlist(s).")
+    return deleted_count
 
 
 def create_youtube_playlist(
@@ -148,7 +234,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Generate YouTube Playlist from export files.\n\nDefaults to the"
+            "Generate YouTube Playlist from export files or clean up old Throwback playlists.\n\nDefaults to the"
             " most recently generated aggregate JSON file in .exports/."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -203,12 +289,28 @@ def main():
         "--dry-run",
         action="store_true",
         help=(
-            "Preview the videos that would be added without creating the"
-            " playlist."
+            "Preview videos to add or playlists to delete without executing changes on YouTube."
+        ),
+    )
+
+    parser.add_argument(
+        "--clean",
+        type=str,
+        metavar="MONTH",
+        default=None,
+        help=(
+            "Delete existing 'YouTube Throwbacks' playlists for a specific month (e.g., '09', '9', '09-30') "
+            "or '*' to delete ALL Throwback playlists."
         ),
     )
 
     args = parser.parse_args()
+
+    if args.clean is not None:
+        print("Authenticating with YouTube...")
+        youtube = get_youtube_client(scopes=SCOPES_READWRITE)
+        delete_throwback_playlists(youtube, month_pattern=args.clean, dry_run=args.dry_run)
+        return
 
     if args.export_file:
         target_path = Path(args.export_file)
